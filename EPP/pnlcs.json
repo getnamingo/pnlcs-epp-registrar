@@ -1,0 +1,11 @@
+{
+    "name": "epp",
+    "type": "registrar",
+    "class": "Modules\\Registrars\\EPP\\EppRegistrar",
+    "version": "1.0.0",
+    "display_name": "Generic EPP",
+    "description": "Generic EPP registrar module powered by Namingo",
+    "author": {
+        "name": "Namingo"
+    }
+}
