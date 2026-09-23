@@ -1,0 +1,36 @@
+name: Build release archives with module-local Tembo
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: xml, simplexml, xmlwriter, mbstring
+          tools: composer:v2
+      - name: Install Tembo inside the registrar module
+        working-directory: EPP/namingo
+        run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+      - name: Validate module and Tembo payloads
+        run: |
+          php tests/run.php
+          php tests/tembo-xml.php
+          php tests/local-dependencies.php
+      - name: Build installable module archives
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: scripts/build-release.sh "$RELEASE_TAG"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
