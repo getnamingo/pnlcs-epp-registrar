@@ -17,9 +17,8 @@ use Pinga\Tembo\EppRegistryFactory;
 /**
  * Generic EPP registrar for PNLCS using Namingo's Pinga\Tembo EPP client.
  *
- * The Namingo client is intentionally NOT bundled. Put it in this module's
- * `namingo/` directory (see README.md), or install pinga/tembo through the
- * application's Composer autoloader.
+ * Release archives include Tembo in this module's `namingo/vendor/` directory.
+ * Source checkouts install dependencies there, without changing PNLCS Composer.
  *
  * Implements every operation currently exposed by PNLCS's registrar contract,
  * authoritative sync, connection testing, and several advanced EPP helpers.
@@ -59,8 +58,8 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         'VRSN' => 'Verisign / gTLD-style',
     ];
 
-    /** Profiles whose Namingo implementation expects nameserver objects. */
-    private const NS_OBJECT_PROFILES = ['EU', 'HR', 'LV', 'GE'];
+    /** Profiles whose Tembo implementation requires inline hostAttr nameservers. */
+    private const HOST_ATTR_PROFILES = ['EU', 'HR', 'LV', 'GE'];
 
     public function __construct()
     {
@@ -69,7 +68,8 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
     public function getModuleName(): string
     {
-        return 'EPP';
+        // PNLCS uses this value to look up registrar_settings during domain sync.
+        return 'epp';
     }
 
     public function getConfigFields(): array
@@ -78,41 +78,217 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         $fieldOptions = ['' => '— Auto detect —'] + $clientFields;
 
         return [
-            ['name' => 'host', 'label' => 'EPP Hostname', 'type' => 'text', 'required' => true],
-            ['name' => 'port', 'label' => 'EPP Port', 'type' => 'text', 'default' => '700', 'required' => true],
+            [
+                'name' => 'host',
+                'label' => 'EPP Hostname',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Registry EPP endpoint hostname (e.g. epp.registry.tld).',
+                'required' => true,
+            ],
+            [
+                'name' => 'port',
+                'label' => 'EPP Port',
+                'type' => 'text',
+                'default' => '700',
+                'description' => 'TCP port used by the registry (700 is the standard EPP port, but some registries use a different value).',
+                'required' => true,
+            ],
+            [
+                'name' => 'tls_version',
+                'label' => 'Prefer TLS 1.3',
+                'type' => 'select',
+                'default' => '1.2',
+                'options' => ['1.2' => 'TLS 1.2', '1.3' => 'TLS 1.3'],
+                'description' => 'Select TLS 1.3 when supported by the registry, or TLS 1.2. Existing PNLCS TLS settings are preserved.',
+            ],
+            [
+                'name' => 'verify_peer',
+                'label' => 'Verify TLS Certificate',
+                'type' => 'yesno',
+                'default' => '1',
+                'description' => 'Validate the registry server certificate (recommended). Disable only for test environments.',
+            ],
+            [
+                'name' => 'cafile',
+                'label' => 'CA Bundle Path',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Path to a CA bundle file used to verify the registry certificate (required when “Verify TLS Certificate” is enabled).',
+            ],
+            [
+                'name' => 'local_cert',
+                'label' => 'Client Certificate (PEM)',
+                'type' => 'text',
+                'default' => 'cert.pem',
+                'description' => 'Path to your registrar client certificate in PEM format.',
+            ],
+            [
+                'name' => 'local_pk',
+                'label' => 'Client Private Key',
+                'type' => 'text',
+                'default' => 'key.pem',
+                'description' => 'Path to your private key file (PEM).',
+            ],
+            [
+                'name' => 'passphrase',
+                'label' => 'Private Key Passphrase',
+                'type' => 'password',
+                'default' => '',
+                'description' => 'Passphrase for the private key (leave blank if the key is not encrypted).',
+            ],
+            [
+                'name' => 'clid',
+                'label' => 'Client ID (clID)',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Registrar identifier provided by the registry.',
+                'required' => true,
+            ],
+            [
+                'name' => 'pw',
+                'label' => 'Client Password',
+                'type' => 'password',
+                'default' => '',
+                'description' => 'EPP login password provided by the registry.',
+                'required' => true,
+            ],
+            [
+                'name' => 'registrarprefix',
+                'label' => 'Object ID Prefix',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Prefix used when generating registry object IDs (contacts/hosts). Use the value required by the registry, if any.',
+            ],
+            [
+                'name' => 'contact_postal_type',
+                'label' => 'Contact Postal Address Type',
+                'type' => 'select',
+                'options' => ['int' => 'int', 'loc' => 'loc'],
+                'default' => 'int',
+                'description' => 'EPP postalInfo type used when creating and updating contacts. int = internationalized format; loc = localized format.',
+            ],
+            [
+                'name' => 'registry_profile',
+                'label' => 'Registry Profile',
+                'type' => 'select',
+                'options' => self::PROFILES,
+                'default' => 'generic',
+                'description' => 'Select the registry profile matching the registry implementation. See the Registry Support list in the README.',
+            ],
+            [
+                'name' => 'ns_mode',
+                'label' => 'Nameserver Mode',
+                'type' => 'select',
+                'options' => ['hostObj' => 'hostObj', 'hostAttr' => 'hostAttr'],
+                'default' => 'hostObj',
+                'description' => 'hostObj uses EPP host objects (default). hostAttr embeds nameservers directly in domain commands; host create/modify/delete operations are unavailable.',
+            ],
+            [
+                'name' => 'set_authinfo_on_info',
+                'label' => 'Set AuthInfo on Request',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Enable if the registry does not return the transfer code on domain info and requires setting it manually first.',
+            ],
+            [
+                'name' => 'login_objects',
+                'label' => 'EPP Login Objects',
+                'type' => 'textarea',
+                'default' => '',
+                'description' => 'Comma-separated EPP login object URIs. Leave empty to use defaults. urn:ietf:params:xml:ns:domain-1.0, urn:ietf:params:xml:ns:contact-1.0, urn:ietf:params:xml:ns:host-1.0',
+            ],
+            [
+                'name' => 'login_extensions',
+                'label' => 'EPP Login Extensions',
+                'type' => 'textarea',
+                'default' => '',
+                'description' => 'Comma-separated EPP login extension URIs. Leave empty to use defaults. urn:ietf:params:xml:ns:secDNS-1.1, urn:ietf:params:xml:ns:rgp-1.0',
+            ],
+            [
+                'name' => 'gtld',
+                'label' => 'gTLD Registry',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Enable this if the registry is a generic TLD (gTLD) operated under ICANN policies.',
+            ],
+            [
+                'name' => 'min_data_set',
+                'label' => 'Use Minimum Data Set',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Use the ICANN Minimum Data Set. Applies only when gTLD Registry is enabled.',
+            ],
+            [
+                'name' => 'eurid_billing_contact',
+                'label' => 'EURid Billing Contact ID',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Optional billing contact handle for EURid. Used only when EPP profile is EU.',
+            ],
+            [
+                'name' => 'pl_contact_prefix',
+                'label' => 'NASK (.pl) Contact Prefix',
+                'type' => 'text',
+                'default' => '',
+                'description' => 'Optional contact ID prefix for NASK (.pl). Used when EPP profile is PL.',
+            ],
+            [
+                'name' => 'tmch_claims_period_active',
+                'label' => 'TMCH Claims Period Active',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Indicates that this TLD is currently in the TMCH Claims Period. When enabled, TMCH Claims Notice checks will be performed. Registration requires an accepted, unexpired notice in params[tmch_claims]; PNLCS has no built-in claims checkout.',
+            ],
+            [
+                'name' => 'enable_fee_extension',
+                'label' => 'Enable EPP Fee Extension (Premium Domains)',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Use domainCheckFee to detect and price premium domains',
+            ],
+            [
+                'name' => 'debug_log',
+                'label' => 'EPP Debug Logging',
+                'type' => 'yesno',
+                'default' => '0',
+                'description' => 'Write raw EPP requests and responses to the configured log directory. Enable only while troubleshooting, then disable.',
+            ],
+            [
+                'name' => 'debug_log_path',
+                'label' => 'EPP Debug Log Path',
+                'type' => 'text',
+                'default' => storage_path('logs/epp'),
+                'description' => 'Absolute directory for raw EPP request and response logs; defaults to PNLCS storage/logs/epp.',
+            ],
+            // PNLCS field mappings and advanced overrides retained from the draft.
             ['name' => 'timeout', 'label' => 'Connection Timeout (seconds)', 'type' => 'text', 'default' => '30', 'required' => false],
-            ['name' => 'tls_version', 'label' => 'TLS Version', 'type' => 'select', 'options' => ['1.2' => 'TLS 1.2', '1.3' => 'TLS 1.3'], 'default' => '1.2', 'required' => true],
-            ['name' => 'verify_peer', 'label' => 'Verify TLS Certificate', 'type' => 'yesno', 'default' => '1'],
             ['name' => 'verify_peer_name', 'label' => 'Verify TLS Hostname', 'type' => 'yesno', 'default' => '1'],
             ['name' => 'allow_self_signed', 'label' => 'Allow Self-signed Certificates', 'type' => 'yesno', 'default' => '0'],
-            ['name' => 'cafile', 'label' => 'CA Bundle Path', 'type' => 'text', 'required' => false],
-            ['name' => 'local_cert', 'label' => 'Client Certificate (PEM)', 'type' => 'text', 'required' => false],
-            ['name' => 'local_pk', 'label' => 'Client Private Key (PEM)', 'type' => 'text', 'required' => false],
-            ['name' => 'passphrase', 'label' => 'Private Key Passphrase', 'type' => 'password', 'required' => false],
-            ['name' => 'clid', 'label' => 'Client ID (clID)', 'type' => 'text', 'required' => true],
-            ['name' => 'pw', 'label' => 'Client Password', 'type' => 'password', 'required' => true],
-            ['name' => 'registrarprefix', 'label' => 'Object ID Prefix', 'type' => 'text', 'default' => 'pnlcs', 'required' => false],
-            ['name' => 'registry_profile', 'label' => 'Registry Profile', 'type' => 'select', 'options' => self::PROFILES, 'default' => 'generic', 'required' => true],
-            ['name' => 'login_objects', 'label' => 'Generic Profile Login Objects', 'type' => 'textarea', 'required' => false],
-            ['name' => 'login_extensions', 'label' => 'Generic Profile Login Extensions', 'type' => 'textarea', 'required' => false],
-            ['name' => 'min_data_set', 'label' => 'Use ICANN Minimum Data Set', 'type' => 'yesno', 'default' => '0'],
-            ['name' => 'set_authinfo_on_info', 'label' => 'Set AuthInfo When Requested', 'type' => 'yesno', 'default' => '0'],
-            ['name' => 'eurid_billing_contact', 'label' => 'EURid Billing Contact ID', 'type' => 'text', 'required' => false],
-            ['name' => 'pl_contact_prefix', 'label' => 'NASK Contact Prefix', 'type' => 'text', 'required' => false],
             ['name' => 'contact_id_prefix', 'label' => 'Contact ID Prefix', 'type' => 'text', 'required' => false],
             ['name' => 'nin_field', 'label' => 'NIN / Personal ID Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'vat_field', 'label' => 'VAT / Tax ID Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'nin_type_field', 'label' => 'NIN Type Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'pt_validated_field', 'label' => 'PT Validation Flag Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'pt_validated_date_field', 'label' => 'PT Validation Date Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
-            ['name' => 'enable_fee_extension', 'label' => 'Use EPP Fee Extension', 'type' => 'yesno', 'default' => '0'],
             ['name' => 'allow_premium', 'label' => 'Allow Premium Registrations', 'type' => 'yesno', 'default' => '0'],
             ['name' => 'fee_currency', 'label' => 'Fee Extension Currency', 'type' => 'text', 'default' => 'USD', 'required' => false],
             ['name' => 'domain_create_extra_json', 'label' => 'Extra domain:create Parameters (JSON)', 'type' => 'textarea', 'required' => false],
             ['name' => 'contact_create_extra_json', 'label' => 'Extra contact:create Parameters (JSON)', 'type' => 'textarea', 'required' => false],
-            ['name' => 'debug_log', 'label' => 'EPP Debug Logging', 'type' => 'yesno', 'default' => '0'],
-            ['name' => 'debug_log_path', 'label' => 'EPP Debug Log Directory', 'type' => 'text', 'required' => false],
         ];
+    }
+
+    /** PNLCS currently renders module help, but not per-field descriptions. */
+    public function getConfigHelp(): string
+    {
+        $help = ['Connect PNLCS to any domain registry using the standard EPP protocol.'];
+        foreach ($this->getConfigFields() as $field) {
+            if (! empty($field['description'])) {
+                $help[] = '<strong>'.$field['label'].'</strong>: '.$field['description'];
+            }
+        }
+
+        return implode('<br><br>', $help);
     }
 
     public function testConnection(): array
@@ -120,7 +296,11 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         try {
             return $this->withEpp(function ($epp): array {
                 $hello = $epp->hello();
-                $this->throwOnError($hello, 'EPP hello failed');
+                if (is_array($hello)) {
+                    $this->throwOnError($hello, 'EPP hello failed');
+                } elseif (! is_string($hello) || ! str_contains($hello, 'greeting')) {
+                    throw new \RuntimeException('EPP hello returned no greeting.');
+                }
 
                 return ['success' => true, 'message' => 'Connected and authenticated to the EPP server.'];
             });
@@ -144,10 +324,11 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                     throw new \RuntimeException($fqdn.' is not available'.($reason !== '' ? ': '.$reason : '.'));
                 }
 
+                $claims = $this->claimsNotice($fqdn, $params);
                 $premium = $this->premiumCheck($epp, $fqdn, 'create', $years);
 
                 $contacts = [];
-                if (! $this->boolSetting('min_data_set')) {
+                if (! $this->isMinDataSet()) {
                     $contacts = $this->createContacts($epp, $domain, $params);
                 }
 
@@ -161,7 +342,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                     'authInfoPw' => $this->randomPassword(),
                 ];
 
-                if (! $this->boolSetting('min_data_set')) {
+                if (! $this->isMinDataSet()) {
                     $payload['registrant'] = $contacts['registrant'] ?? null;
                     $domainContacts = array_filter([
                         'admin' => $contacts['admin'] ?? null,
@@ -179,7 +360,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 }
 
                 $payload = array_replace_recursive($payload, $this->jsonSetting('domain_create_extra_json'));
-                $created = $epp->domainCreate($payload);
+                $created = $claims === []
+                    ? $epp->domainCreate($payload)
+                    : $epp->domainCreateClaims(array_replace($payload, $claims));
                 $this->throwOnError($created, 'Domain create failed');
 
                 $expiry = $this->responseDate($created, ['exDate', 'expiryDate', 'expiry_date'])
@@ -226,7 +409,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
                 // AFNIC transfer requests need the existing admin/tech handles.
                 if ($this->profile() === 'FR') {
-                    $info = $epp->domainInfo(['domainname' => $fqdn]);
+                    $info = $this->domainInfo($epp, $fqdn);
                     $this->throwOnError($info, 'Domain info failed before transfer');
                     $roleIds = $this->contactRolesFromDomainInfo($info);
                     $payload['admin'] = $roleIds['admin'] ?? null;
@@ -258,7 +441,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 // intentionally does not issue domain:renew. Preserve that model,
                 // but refresh registry data before moving PNLCS's billing date.
                 if ($this->profile() === 'LV') {
-                    $info = $epp->domainInfo(['domainname' => $fqdn]);
+                    $info = $this->domainInfo($epp, $fqdn);
                     $this->throwOnError($info, 'LV domain info failed');
                     $authoritative = $this->responseDate($info, ['exDate', 'expiryDate', 'expiry_date']);
                     $local = $domain->expiry_date?->copy();
@@ -308,7 +491,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     {
         try {
             return $this->withEpp(function ($epp) use ($domain): array {
-                $info = $epp->domainInfo(['domainname' => $this->asciiDomain($domain->domain)]);
+                $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
                 $this->throwOnError($info, 'Domain info failed');
 
                 return $this->nameserversFromInfo($info);
@@ -331,7 +514,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             return $this->withEpp(function ($epp) use ($domain, $fqdn, $nameservers): bool {
                 $this->ensureHostObjects($epp, $nameservers);
 
-                if ($this->usesNameserverObjects()) {
+                if ($this->usesHostAttributes()) {
                     $payload = [
                         'domainname' => $fqdn,
                         'nss' => $this->formatNameservers($nameservers),
@@ -343,7 +526,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                     }
                 }
 
-                $response = $epp->domainUpdateNS($payload);
+                $response = $this->needsHostAttrAdapter()
+                    ? $this->updateHostAttributes($epp, $fqdn, $nameservers)
+                    : $epp->domainUpdateNS($payload);
                 $this->throwOnError($response, 'Nameserver update failed');
 
                 // DomainService also persists this after true is returned. This
@@ -365,27 +550,26 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             $fqdn = $this->asciiDomain($domain->domain);
 
             return $this->withEpp(function ($epp) use ($fqdn): string {
-                $info = $epp->domainInfo(['domainname' => $fqdn]);
-                $this->throwOnError($info, 'Domain info failed');
+                if ($this->boolSetting('set_authinfo_on_info')) {
+                    $newCode = $this->randomPassword();
+                    $response = $epp->domainUpdateAuthinfo([
+                        'domainname' => $fqdn,
+                        'authInfo' => $newCode,
+                    ]);
+                    $this->throwOnError($response, 'Could not set a new AuthInfo code');
 
-                foreach (['authInfoPw', 'authInfo', 'authinfo', 'pw'] as $key) {
+                    return $newCode;
+                }
+
+                $info = $this->domainInfo($epp, $fqdn);
+                $this->throwOnError($info, 'Domain info failed');
+                foreach (['authInfo', 'authInfoPw', 'authinfo', 'pw'] as $key) {
                     if (isset($info[$key]) && is_scalar($info[$key]) && trim((string) $info[$key]) !== '') {
                         return (string) $info[$key];
                     }
                 }
 
-                if (! $this->boolSetting('set_authinfo_on_info')) {
-                    return '';
-                }
-
-                $newCode = $this->randomPassword();
-                $response = $epp->domainUpdateAuthinfo([
-                    'domainname' => $fqdn,
-                    'authInfoPw' => $newCode,
-                ]);
-                $this->throwOnError($response, 'Could not set a new AuthInfo code');
-
-                return $newCode;
+                return '';
             });
         } catch (\Throwable $e) {
             $this->logFailure('getEPPCode', $domain->domain, $e, 'warning');
@@ -398,7 +582,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     {
         try {
             return $this->withEpp(function ($epp) use ($domain): bool {
-                $info = $epp->domainInfo(['domainname' => $this->asciiDomain($domain->domain)]);
+                $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
                 $this->throwOnError($info, 'Domain info failed');
                 $statuses = $this->statuses($info);
 
@@ -418,7 +602,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             $fqdn = $this->asciiDomain($domain->domain);
 
             return $this->withEpp(function ($epp) use ($fqdn, $lock): bool {
-                $info = $epp->domainInfo(['domainname' => $fqdn]);
+                $info = $this->domainInfo($epp, $fqdn);
                 $this->throwOnError($info, 'Domain info failed');
                 $statuses = $this->statuses($info);
 
@@ -457,11 +641,22 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 $this->throwOnError($response, 'Domain check failed');
                 [$available, $reason] = $this->availabilityFromResponse($response, $fqdn);
 
+                $premium = $available ? $this->premiumCheck($epp, $fqdn, 'create', 1, false) : ['checked' => false, 'premium' => false];
+                $claims = null;
+                if ($available && $this->boolSetting('tmch_claims_period_active')) {
+                    $claims = $epp->domainCheckClaims(['domainname' => $fqdn]);
+                    $this->throwOnError($claims, 'TMCH claims check failed');
+                    $claims = array_map(static fn ($value) => $value instanceof \SimpleXMLElement ? (string) $value : $value, $claims);
+                }
+
                 return [
-                    'available' => $available,
+                    'available' => $available && (! $premium['premium'] || $this->boolSetting('allow_premium')),
                     'domain' => $fqdn,
                     'method' => 'epp',
-                    'reason' => $reason,
+                    'reason' => $premium['premium'] && ! $this->boolSetting('allow_premium')
+                        ? 'Premium domains are not enabled.' : $reason,
+                    'premium' => $premium,
+                    'claims' => $claims,
                 ];
             });
         } catch (\Throwable $e) {
@@ -478,7 +673,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     {
         try {
             return $this->withEpp(function ($epp) use ($domain): array {
-                $info = $epp->domainInfo(['domainname' => $this->asciiDomain($domain->domain)]);
+                $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
                 $this->throwOnError($info, 'Domain info failed');
 
                 $expiry = $this->responseDate($info, ['exDate', 'expiryDate', 'expiry_date']);
@@ -504,6 +699,198 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     // Advanced helpers. PNLCS does not currently expose these in its base
     // registrar interface, but they are useful to admin tooling/API extensions.
     // ---------------------------------------------------------------------
+
+    /** Registry contacts, keyed by registrant/admin/tech/billing. */
+    public function getContactDetails(Domain $domain): array
+    {
+        if ($this->isMinDataSet()) {
+            return ['success' => false, 'message' => 'Minimum Data Set contacts are held locally. Use the PNLCS client record.'];
+        }
+
+        try {
+            return $this->withEpp(function ($epp) use ($domain): array {
+                $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
+                $this->throwOnError($info, 'Domain info failed');
+                $contacts = $cache = [];
+                foreach ($this->contactRolesFromDomainInfo($info) as $role => $id) {
+                    if (! isset($cache[$id])) {
+                        $response = $epp->contactInfo(['contact' => $id]);
+                        $this->throwOnError($response, 'Contact info failed for '.$id);
+                        $cache[$id] = $this->contactDetailsFromInfo($response);
+                        $cache[$id]['id'] = $id;
+                    }
+                    $contacts[$role] = $cache[$id];
+                }
+
+                return ['success' => true, 'contacts' => $contacts];
+            });
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Update only supplied roles and fields; never accept a caller-provided ID.
+     * Accepts Tembo field names or WHMCS contactdetails labels.
+     */
+    public function saveContactDetails(Domain $domain, array $contacts): array
+    {
+        if ($this->isMinDataSet()) {
+            return ['success' => false, 'message' => 'Minimum Data Set contacts are held locally. Update the PNLCS client record.'];
+        }
+
+        try {
+            return $this->withEpp(function ($epp) use ($domain, $contacts): array {
+                $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
+                $this->throwOnError($info, 'Domain info failed');
+                $roles = $this->contactRolesFromDomainInfo($info);
+                $updates = $cache = [];
+                $contacts = $contacts['contactdetails'] ?? $contacts;
+                if ($contacts === []) {
+                    throw new \RuntimeException('No contact changes were supplied.');
+                }
+                foreach ($contacts as $role => $fields) {
+                    $role = match (strtolower((string) $role)) {
+                        'registrant' => 'registrant',
+                        'admin', 'administrator' => 'admin',
+                        'tech', 'technical' => 'tech',
+                        'billing' => 'billing',
+                        default => throw new \RuntimeException('Unknown contact role: '.$role),
+                    };
+                    if (! is_array($fields) || ! isset($roles[$role])) {
+                        throw new \RuntimeException('No registry contact or valid fields for '.$role.'.');
+                    }
+                    $id = $roles[$role];
+                    if (! isset($cache[$id])) {
+                        $response = $epp->contactInfo(['contact' => $id]);
+                        $this->throwOnError($response, 'Contact info failed for '.$id);
+                        $cache[$id] = $this->contactDetailsFromInfo($response);
+                        if ($this->profile() === 'PT') {
+                            $cache[$id]['validated'] = (string) ($response['validated'] ?? 'false');
+                            $cache[$id]['validatedDate'] = (string) ($response['validatedDate'] ?? '');
+                        }
+                    }
+                    $payload = array_replace($cache[$id], $this->normalizeContactFields($fields));
+                    $payload['id'] = $id;
+                    $payload['type'] = $this->contactPostalType();
+                    if ($this->profile() === 'PT') {
+                        $payload['validated'] = $this->toEppBooleanString((string) ($payload['validated'] ?? 'false'));
+                        $payload['validatedDate'] = ! empty($payload['validatedDate']) ? $this->isoDateTime($payload['validatedDate']) : '';
+                    }
+                    $payload['country'] = strtoupper($payload['country']);
+                    $payload['fullphonenumber'] = $this->normalizePhone($payload['fullphonenumber']);
+                    if (isset($updates[$id]) && $updates[$id] !== $payload) {
+                        throw new \RuntimeException('Conflicting changes for shared registry contact '.$id.'.');
+                    }
+                    $updates[$id] = $payload;
+                }
+                foreach ($updates as $id => $payload) {
+                    $response = $epp->contactUpdate($payload);
+                    $this->throwOnError($response, 'Contact update failed for '.$id);
+                }
+
+                return ['success' => true, 'message' => 'Domain contacts updated through EPP.'];
+            });
+        } catch (\Throwable $e) {
+            $this->logFailure('saveContactDetails', $domain->domain, $e);
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function registerNameserver(string $hostname, string $ipAddress): array
+    {
+        return $this->hostCommand('hostCreate', ['hostname' => $hostname, 'ipaddress' => $ipAddress]);
+    }
+
+    public function modifyNameserver(string $hostname, string $currentIpAddress, string $newIpAddress): array
+    {
+        return $this->hostCommand('hostUpdate', [
+            'hostname' => $hostname,
+            'currentipaddress' => $currentIpAddress,
+            'newipaddress' => $newIpAddress,
+        ]);
+    }
+
+    public function deleteNameserver(string $hostname): array
+    {
+        return $this->hostCommand('hostDelete', ['hostname' => $hostname]);
+    }
+
+    private function hostCommand(string $method, array $payload): array
+    {
+        if ($this->usesHostAttributes()) {
+            return ['success' => false, 'message' => 'Host object operations are unavailable when Nameserver Mode is hostAttr. Change the domain nameservers instead.'];
+        }
+        try {
+            $payload['hostname'] = $this->asciiHostname($payload['hostname']);
+            foreach (['ipaddress', 'currentipaddress', 'newipaddress'] as $key) {
+                if (isset($payload[$key]) && ! filter_var($payload[$key], FILTER_VALIDATE_IP)) {
+                    throw new \RuntimeException('Invalid nameserver IP address.');
+                }
+            }
+
+            return $this->withEpp(function ($epp) use ($method, $payload): array {
+                $response = $epp->{$method}($payload);
+                $this->throwOnError($response, 'Nameserver operation failed');
+
+                return ['success' => true, 'response' => $response];
+            });
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    private function contactDetailsFromInfo(array $info): array
+    {
+        [$first, $last] = array_pad(preg_split('/\s+/', trim((string) ($info['name'] ?? '')), 2), 2, '');
+
+        return [
+            'firstname' => $first, 'lastname' => $last,
+            'companyname' => (string) ($info['org'] ?? ''),
+            'address1' => (string) ($info['street1'] ?? ''),
+            'address2' => (string) ($info['street2'] ?? ''),
+            'address3' => (string) ($info['street3'] ?? ''),
+            'city' => (string) ($info['city'] ?? ''),
+            'state' => (string) ($info['state'] ?? ''),
+            'postcode' => (string) ($info['postal'] ?? ''),
+            'country' => (string) ($info['country'] ?? ''),
+            'fullphonenumber' => (string) ($info['voice'] ?? ''),
+            'email' => (string) ($info['email'] ?? ''),
+        ];
+    }
+
+    private function normalizeContactFields(array $fields): array
+    {
+        $aliases = [
+            'Organization' => 'companyname', 'Organisation Name' => 'companyname',
+            'Street 1' => 'address1', 'Address 1' => 'address1',
+            'Street 2' => 'address2', 'Address 2' => 'address2',
+            'Street 3' => 'address3', 'Address 3' => 'address3',
+            'City' => 'city', 'State or Province' => 'state', 'State' => 'state',
+            'Postal Code' => 'postcode', 'Postcode' => 'postcode',
+            'Country Code' => 'country', 'Country' => 'country',
+            'Phone' => 'fullphonenumber', 'Email' => 'email',
+        ];
+        $result = [];
+        $allowed = array_keys($this->contactDetailsFromInfo([]));
+        foreach ($fields as $key => $value) {
+            $key = $aliases[$key] ?? $key;
+            if (in_array($key, $allowed, true) || in_array($key, ['validated', 'validatedDate'], true)) {
+                if (! is_scalar($value)) {
+                    throw new \RuntimeException('Invalid contact field: '.$key);
+                }
+                $result[$key] = (string) $value;
+            }
+        }
+        if (isset($fields['Name']) || isset($fields['Full Name'])) {
+            [$result['firstname'], $result['lastname']] = array_pad(
+                preg_split('/\s+/', trim((string) ($fields['Name'] ?? $fields['Full Name'])), 2), 2, ''
+            );
+        }
+
+        return $result;
+    }
 
     public function transferStatus(Domain $domain): array
     {
@@ -671,9 +1058,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             'host' => $host,
             'port' => $port,
             'timeout' => max(1, (int) ($this->settings['timeout'] ?? 30)),
-            'tls' => in_array((string) ($this->settings['tls_version'] ?? '1.2'), ['1.2', '1.3'], true)
-                ? (string) $this->settings['tls_version']
-                : '1.2',
+            'tls' => ($this->settings['tls_version'] ?? '1.2') === '1.3' || $this->boolSetting('tls_version') ? '1.3' : '1.2',
             'bind' => false,
             'bindip' => '0.0.0.0:0',
             'verify_peer' => $this->boolSetting('verify_peer', true),
@@ -685,77 +1070,46 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             'passphrase' => (string) ($this->settings['passphrase'] ?? ''),
         ];
 
-        $epp->connect($connection);
+        try {
+            $epp->connect($connection);
 
-        $login = $epp->login([
-            'clID' => (string) ($this->settings['clid'] ?? ''),
-            'pw' => (string) ($this->settings['pw'] ?? ''),
-            'prefix' => trim((string) ($this->settings['registrarprefix'] ?? 'pnlcs')) ?: 'pnlcs',
-        ]);
-        $this->throwOnError($login, 'EPP login failed');
+            $login = $epp->login([
+                'clID' => (string) ($this->settings['clid'] ?? ''),
+                'pw' => (string) ($this->settings['pw'] ?? ''),
+                'prefix' => trim((string) ($this->settings['registrarprefix'] ?? 'pnlcs')) ?: 'pnlcs',
+            ]);
+            $this->throwOnError($login, 'EPP login failed');
+        } catch (\Throwable $e) {
+            try {
+                $epp->disconnect();
+            } catch (\Throwable) {
+                // Preserve the connection/login failure.
+            }
+            throw $e;
+        }
 
         return $epp;
     }
 
     private function ensureNamingoLoaded(): void
     {
-        if ($this->namingoLoaded || class_exists(EppRegistryFactory::class)) {
-            $this->namingoLoaded = true;
-
+        if ($this->namingoLoaded) {
             return;
         }
 
-        $autoloaders = [
-            __DIR__.'/namingo/vendor/autoload.php',
-            __DIR__.'/namingo/autoload.php',
-            __DIR__.'/namingo/lib/epp/autoload.php',
-            base_path('namingo/vendor/autoload.php'),
-            base_path('namingo/autoload.php'),
-            base_path('namingo/lib/epp/autoload.php'),
-        ];
-
-        foreach ($autoloaders as $file) {
-            if (is_file($file)) {
-                require_once $file;
-                if (class_exists(EppRegistryFactory::class)) {
-                    $this->namingoLoaded = true;
-
-                    return;
-                }
-            }
+        $autoload = __DIR__.'/namingo/vendor/autoload.php';
+        if (! is_file($autoload)) {
+            throw new \RuntimeException(
+                'Module-local Tembo is missing. Install a release archive or run '
+                .'composer install --no-dev in modules/Registrars/EPP/namingo.'
+            );
         }
 
-        // Standalone getnamingo/epp-client copied as `namingo/` may contain
-        // src/ without a generated vendor/autoload.php. Supply its tiny PSR-4
-        // bridge without copying any Namingo files into this module package.
-        foreach ([__DIR__.'/namingo/src', base_path('namingo/src')] as $src) {
-            if (! is_dir($src)) {
-                continue;
-            }
-
-            spl_autoload_register(static function (string $class) use ($src): void {
-                $prefix = 'Pinga\\Tembo\\';
-                if (! str_starts_with($class, $prefix)) {
-                    return;
-                }
-                $relative = substr($class, strlen($prefix));
-                $file = $src.'/'.str_replace('\\', '/', $relative).'.php';
-                if (is_file($file)) {
-                    require_once $file;
-                }
-            }, true, true);
-
-            if (class_exists(EppRegistryFactory::class)) {
-                $this->namingoLoaded = true;
-
-                return;
-            }
+        require_once $autoload;
+        if (! class_exists(EppRegistryFactory::class)) {
+            throw new \RuntimeException('The module-local Tembo installation is incomplete. Reinstall the module dependencies.');
         }
-
-        throw new \RuntimeException(
-            'Namingo EPP client not found. Add it as modules/Registrars/EPP/namingo/ '
-            .'(or install pinga/tembo with Composer). It is intentionally not included in this package.'
-        );
+        $this->namingoLoaded = true;
     }
 
     // ---------------------------------------------------------------------
@@ -791,12 +1145,16 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             ['nin_type']
         );
 
+        $nin = $params['additionalfields']['NIN'] ?? $nin;
+        $vat = $params['additionalfields']['VAT'] ?? $vat;
+        $ninType = $params['additionalfields']['NIN Type'] ?? $ninType;
+
         $created = [];
         foreach ($roles as $role) {
             $id = $this->contactId();
             $payload = [
                 'id' => $id,
-                'type' => 'int',
+                'type' => $this->contactPostalType(),
                 'firstname' => (string) ($params['firstname'] ?? $client->first_name ?? ''),
                 'lastname' => (string) ($params['lastname'] ?? $client->last_name ?? ''),
                 'companyname' => (string) ($params['companyname'] ?? $client->company_name ?? ''),
@@ -806,8 +1164,8 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 'city' => (string) ($params['city'] ?? $client->city ?? ''),
                 'state' => (string) ($params['state'] ?? $client->state ?? ''),
                 'postcode' => (string) ($params['postcode'] ?? $client->postcode ?? ''),
-                'country' => strtoupper((string) ($params['country'] ?? $client->country ?? '')),
-                'fullphonenumber' => $this->normalizePhone((string) ($params['fullphonenumber'] ?? $params['phone'] ?? $client->full_phone ?? '')),
+                'country' => strtoupper((string) ($params['countrycode'] ?? $params['country'] ?? $client->country ?? '')),
+                'fullphonenumber' => $this->normalizePhone((string) ($params['fullphonenumber'] ?? $params['phone'] ?? $client->full_phone ?? ''), (string) ($client->phone_prefix ?? '')),
                 'email' => (string) ($params['email'] ?? $client->email ?? ''),
                 'authInfoPw' => $this->randomPassword(),
             ];
@@ -840,6 +1198,8 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                         $this->nullableSetting('pt_validated_date_field'),
                         ['pt_validated_date', 'validated_date']
                     );
+                    $payload['validated'] = 'false';
+                    $payload['validatedDate'] = '';
                     if ($validated !== null) {
                         $payload['validated'] = $this->toEppBooleanString($validated);
                     }
@@ -853,6 +1213,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             }
 
             $payload = array_replace_recursive($payload, $this->jsonSetting('contact_create_extra_json'));
+            $payload['type'] = $this->contactPostalType();
             // Null extras can change XML semantics in registry-specific classes.
             $payload = array_filter($payload, static fn ($value) => $value !== null);
 
@@ -864,9 +1225,35 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         return $created;
     }
 
-    private function premiumCheck(object $epp, string $domain, string $command, int $years): array
+    private function claimsNotice(string $domain, array $params): array
     {
-        if (! $this->boolSetting('enable_fee_extension')) {
+        if (! $this->boolSetting('tmch_claims_period_active')) {
+            return [];
+        }
+        $notice = $params['tmch_claims'] ?? null;
+        if (! is_array($notice)
+            || strtolower((string) ($notice['domain'] ?? '')) !== $domain
+            || ! filter_var($notice['accepted'] ?? false, FILTER_VALIDATE_BOOL)
+            || trim((string) ($notice['noticeID'] ?? '')) === '') {
+            throw new \RuntimeException('TMCH Claims Notice is missing or unaccepted for domain: '.$domain);
+        }
+        $notAfter = strtotime((string) ($notice['notAfter'] ?? ''));
+        $acceptedDate = strtotime((string) ($notice['acceptedDate'] ?? ''));
+        if ($notAfter === false || $notAfter <= time() || $acceptedDate === false
+            || $acceptedDate > time() || $acceptedDate >= $notAfter) {
+            throw new \RuntimeException('TMCH Claims Notice is missing or expired for domain: '.$domain);
+        }
+
+        return [
+            'noticeID' => (string) $notice['noticeID'],
+            'notAfter' => gmdate('Y-m-d\TH:i:s\Z', $notAfter),
+            'acceptedDate' => gmdate('Y-m-d\TH:i:s\Z', $acceptedDate),
+        ];
+    }
+
+    private function premiumCheck(object $epp, string $domain, string $command, int $years, bool $enforce = true): array
+    {
+        if (! $this->boolSetting('gtld') || ! $this->boolSetting('enable_fee_extension')) {
             return ['checked' => false, 'premium' => false];
         }
 
@@ -888,7 +1275,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             }
 
             $premium = $feeClass === 'premium';
-            if ($premium && ! $this->boolSetting('allow_premium')) {
+            if ($enforce && $premium && ! $this->boolSetting('allow_premium')) {
                 throw new \RuntimeException('Premium domain detected, but premium registrations/renewals are disabled.');
             }
 
@@ -905,9 +1292,89 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         }
     }
 
+    private function needsHostAttrAdapter(): bool
+    {
+        return $this->usesHostAttributes() && ! in_array($this->profile(), self::HOST_ATTR_PROFILES, true);
+    }
+
+    private function domainInfo(object $epp, string $domain): array
+    {
+        if (! $this->needsHostAttrAdapter()) {
+            return $epp->domainInfo(['domainname' => $domain]);
+        }
+        $name = htmlspecialchars($domain, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $response = $epp->rawXml(['xml' => '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><info>'
+            .'<domain:info xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">'
+            .'<domain:name hosts="all">'.$name.'</domain:name></domain:info></info></command></epp>']);
+        $this->throwOnError($response, 'Domain info failed');
+        $xml = simplexml_load_string((string) ($response['xml'] ?? ''), \SimpleXMLElement::class, LIBXML_NONET);
+        if ($xml === false) {
+            throw new \RuntimeException('Invalid domain info XML.');
+        }
+        $xml->registerXPathNamespace('d', 'urn:ietf:params:xml:ns:domain-1.0');
+        $data = ($xml->xpath('//d:infData') ?: [])[0] ?? null;
+        if ($data === null) {
+            throw new \RuntimeException('Domain info response has no infData.');
+        }
+        $data = $data->children('urn:ietf:params:xml:ns:domain-1.0');
+        $info = ['code' => $response['code'], 'ns' => [], 'status' => [], 'contact' => []];
+        foreach (['name', 'registrant', 'clID', 'crID', 'crDate', 'upDate', 'exDate', 'trDate'] as $key) {
+            $info[$key] = (string) $data->{$key};
+        }
+        $info['authInfo'] = (string) $data->authInfo->pw;
+        foreach ($data->ns->hostAttr ?? [] as $ns) {
+            $info['ns'][] = (string) $ns->hostName;
+        }
+        foreach ($data->status as $status) {
+            $info['status'][] = (string) $status->attributes()->s;
+        }
+        foreach ($data->contact as $contact) {
+            $info['contact'][] = ['type' => (string) $contact->attributes()->type, 'id' => (string) $contact];
+        }
+
+        return $info;
+    }
+
+    private function updateHostAttributes(object $epp, string $domain, array $nameservers): array
+    {
+        $current = $this->nameserversFromInfo($this->domainInfo($epp, $domain));
+        $add = array_values(array_diff($nameservers, $current));
+        $remove = array_values(array_diff($current, $nameservers));
+        if ($add === [] && $remove === []) {
+            return ['code' => 1000];
+        }
+        $escape = static fn (string $text): string => htmlspecialchars($text, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><update>'
+            .'<domain:update xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">'
+            .'<domain:name>'.$escape($domain).'</domain:name>';
+        foreach (['add' => $add, 'rem' => $remove] as $operation => $hosts) {
+            if ($hosts === []) {
+                continue;
+            }
+            $xml .= '<domain:'.$operation.'><domain:ns>';
+            foreach ($this->formatNameservers($hosts) as $host) {
+                $xml .= '<domain:hostAttr><domain:hostName>'.$escape($host['hostName']).'</domain:hostName>';
+                if ($operation === 'add') {
+                    foreach (['ipv4' => 'v4', 'ipv6' => 'v6'] as $key => $family) {
+                        if (! empty($host[$key])) {
+                            $xml .= '<domain:hostAddr ip="'.$family.'">'.$escape($host[$key]).'</domain:hostAddr>';
+                        }
+                    }
+                }
+                $xml .= '</domain:hostAttr>';
+            }
+            $xml .= '</domain:ns></domain:'.$operation.'>';
+        }
+        $xml .= '</domain:update></update><clTRID>epp-ns-'.bin2hex(random_bytes(8)).'</clTRID></command></epp>';
+
+        return $epp->rawXml(['xml' => $xml]);
+    }
+
     private function ensureHostObjects(object $epp, array $nameservers): void
     {
-        if ($this->usesNameserverObjects()) {
+        if ($this->usesHostAttributes()) {
             return;
         }
 
@@ -1114,6 +1581,12 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
     private function throwOnError(mixed $response, string $prefix): void
     {
+        if (! is_array($response)) {
+            throw new \RuntimeException($prefix.': invalid EPP response');
+        }
+        if (isset($response['code']) && (int) $response['code'] >= 2000) {
+            throw new \RuntimeException($prefix.': '.($response['msg'] ?? $response['error'] ?? 'EPP error').' ('.$response['code'].')');
+        }
         if (is_array($response) && isset($response['error']) && trim((string) $response['error']) !== '') {
             throw new \RuntimeException($prefix.': '.(string) $response['error']);
         }
@@ -1236,7 +1709,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
     private function formatNameservers(array $nameservers): array
     {
-        if (! $this->usesNameserverObjects()) {
+        if (! $this->usesHostAttributes()) {
             return array_values($nameservers);
         }
 
@@ -1261,9 +1734,10 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         return $out;
     }
 
-    private function usesNameserverObjects(): bool
+    private function usesHostAttributes(): bool
     {
-        return in_array($this->profile(), self::NS_OBJECT_PROFILES, true);
+        return ($this->settings['ns_mode'] ?? 'hostObj') === 'hostAttr'
+            || in_array($this->profile(), self::HOST_ATTR_PROFILES, true);
     }
 
     private function looksInBailiwickForProfile(string $host): bool
@@ -1324,35 +1798,56 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
         $random = strtoupper(bin2hex(random_bytes(6)));
 
-        return $prefix.$random;
+        $registrar = strtoupper(trim((string) ($this->settings['registrarprefix'] ?? '')));
+
+        return $prefix.$random.($registrar !== '' ? '-'.$registrar : '');
     }
 
-    private function randomPassword(int $length = 20): string
+    private function randomPassword(int $length = 16): string
     {
-        $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!=+-';
-        $password = '';
-        for ($i = 0; $i < $length; $i++) {
-            $password .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        $sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%&*+-=?'];
+        $characters = [];
+        foreach ($sets as $set) {
+            $characters[] = $set[random_int(0, strlen($set) - 1)];
+        }
+        $alphabet = implode('', $sets);
+        while (count($characters) < max(4, $length)) {
+            $characters[] = $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+        for ($i = count($characters) - 1; $i > 0; $i--) {
+            $j = random_int(0, $i);
+            [$characters[$i], $characters[$j]] = [$characters[$j], $characters[$i]];
         }
 
-        return $password;
+        return implode('', $characters);
     }
 
-    private function normalizePhone(string $phone): string
+    private function normalizePhone(string $phone, string $prefix = ''): string
     {
         $phone = trim($phone);
-        if ($phone === '') {
-            return '';
-        }
-
-        // Namingo accepts the RFC contact voice form (+CC.number). Preserve it
-        // when supplied. Otherwise keep a normalized international number
-        // rather than guessing where a 1-3 digit country code ends.
-        if (preg_match('/^\+\d{1,3}\.\d+$/', $phone)) {
+        if ($phone === '' || preg_match('/^\+\d{1,3}\.\d+$/', $phone)) {
             return $phone;
+        }
+        $prefix = ltrim(trim($prefix), '+');
+        if ($prefix === '' && preg_match('/^\+(\d{1,3})[ .-]+(.+)$/', $phone, $parts)) {
+            $prefix = $parts[1];
+        }
+        $digits = preg_replace('/[^0-9]/', '', $phone) ?? '';
+        if ($prefix !== '' && str_starts_with($digits, $prefix)) {
+            return '+'.$prefix.'.'.substr($digits, strlen($prefix));
         }
 
         return preg_replace('/[^0-9+]/', '', $phone) ?? $phone;
+    }
+
+    private function isMinDataSet(): bool
+    {
+        return $this->boolSetting('gtld') && $this->boolSetting('min_data_set');
+    }
+
+    private function contactPostalType(): string
+    {
+        return ($this->settings['contact_postal_type'] ?? 'int') === 'loc' ? 'loc' : 'int';
     }
 
     private function uriList(mixed $raw, array $defaults): array

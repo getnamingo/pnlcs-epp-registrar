@@ -1,0 +1,16 @@
+{
+    "name": "namingo/pnlcs-epp-dependencies",
+    "description": "Module-local Tembo dependencies for the PNLCS EPP Registrar",
+    "license": "MIT",
+    "require": {
+        "ext-simplexml": "*",
+        "ext-xml": "*",
+        "ext-xmlwriter": "*",
+        "monolog/monolog": "^3.0",
+        "php": "^8.3",
+        "pinga/tembo": "^1.1.22"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
