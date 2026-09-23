@@ -17,7 +17,7 @@ use Pinga\Tembo\EppRegistryFactory;
 /**
  * Generic EPP registrar for PNLCS using Namingo's Pinga\Tembo EPP client.
  *
- * Release archives include Tembo in this module's `namingo/vendor/` directory.
+ * The installer installs Tembo in this module's `namingo/vendor/` directory.
  * Source checkouts install dependencies there, without changing PNLCS Composer.
  *
  * Implements every operation currently exposed by PNLCS's registrar contract,
@@ -1100,7 +1100,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         $autoload = __DIR__.'/namingo/vendor/autoload.php';
         if (! is_file($autoload)) {
             throw new \RuntimeException(
-                'Module-local Tembo is missing. Install a release archive or run '
+                'Module-local Tembo is missing. Run the installer again or run '
                 .'composer install --no-dev in modules/Registrars/EPP/namingo.'
             );
         }
