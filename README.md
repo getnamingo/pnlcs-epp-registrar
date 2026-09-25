@@ -66,34 +66,43 @@ This module is designed to work with both gTLD and ccTLD registries and provides
 
 ## Installation
 
-Use a current PNLCS installation with `pnlcs.json` module discovery, `SyncsDomainData`, and `MapsClientFields` (the current PNLCS main branch requires PHP 8.4+). Enable PHP XML, SimpleXML and XMLWriter; Intl is recommended for internationalized domain names.
+**Minimum requirement:** A current PNLCS installation with module discovery (PHP 8.4+). The installer requires Bash, curl, tar, Perl, PHP CLI and Composer 2, and uses the `www-data` web-server user, like the WHMCS installer.
 
-### Release archive (recommended)
-
-Download **pnlcs-epp-VERSION.zip** or **pnlcs-epp-VERSION.tar.gz** from [Releases](https://github.com/getnamingo/pnlcs-epp-registrar/releases). Extract it into the PNLCS application directory. These attached archives contain:
-
-```text
-modules/Registrars/EPP/EppRegistrar.php
-modules/Registrars/EPP/pnlcs.json
-modules/Registrars/EPP/namingo/composer.json
-modules/Registrars/EPP/namingo/composer.lock
-modules/Registrars/EPP/namingo/vendor/autoload.php
-```
-
-The release workflow installs the locked Tembo and Monolog dependencies **inside `EPP/namingo`** before packaging. No Composer changes in the PNLCS application are needed. GitHub's automatic "Source code" ZIP/TAR downloads do not contain dependencies; use the attached module archive or the source instructions below.
-
-### Source checkout
+1. Install with the automated installer:
 
 ```bash
-git clone https://github.com/getnamingo/pnlcs-epp-registrar.git
-cd pnlcs-epp-registrar
-composer install --working-dir=EPP/namingo --no-dev --prefer-dist --optimize-autoloader
-cp -a EPP /path/to/pnlcs/modules/Registrars/
+bash <(wget -qO- https://raw.githubusercontent.com/getnamingo/pnlcs-epp-registrar/main/install-pnlcs-epp.sh) namingo
 ```
 
-Run Composer only in the module's `namingo` directory. The old `composer require pinga/tembo` at the PNLCS root is no longer used. The module reports a clear error if its local autoloader is missing, even when a global Tembo autoloader is available.
+Replace `namingo` with the registry name. Run without parameters to list all supported registries:
 
-In PNLCS, open the registrar settings, enable **epp**, enter the registry credentials, and assign it to the appropriate TLDs. The manifest registers the module automatically; no core provider edits are needed. Set certificate, private-key and CA paths to readable files. Relative paths are resolved from the module directory first. Keep private keys outside the public web directory.
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/getnamingo/pnlcs-epp-registrar/main/install-pnlcs-epp.sh)
+```
+
+The installer automatically detects PNLCS under `/var/www`. You may specify the path explicitly:
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/getnamingo/pnlcs-epp-registrar/main/install-pnlcs-epp.sh) namingo /var/www/pnlcs
+```
+
+2. During installation, the script can optionally generate a **self-signed EPP client certificate for testing**. It prints the certificate and private-key paths. For production, use credentials issued or approved by the registry.
+
+3. In **Configuration → Domain Registrars**, enable the installed registrar and enter the EPP host, port, login credentials and certificate/key paths. Select the correct **Registry Profile** and other registry-specific options. The installer name identifies the separate module; it does not select the Tembo protocol profile automatically. For DRS.UA, use `generic` and set **Contact Postal Address Type** to `loc`.
+
+4. In **Configuration → Domain Pricing**, add the TLD, assign the installed registrar and configure pricing.
+
+5. Clear application caches and restart queue workers after installing or upgrading:
+
+```bash
+cd /var/www/pnlcs
+php artisan optimize:clear
+php artisan queue:restart
+```
+
+For `namingo`, the installer creates `modules/Registrars/Namingo/NamingoRegistrar.php`, namespace `Modules\Registrars\Namingo`, class `NamingoRegistrar`, and registrar key `namingo`. It updates the manifest, settings lookups, domain registrar assignments and log paths consistently. Other profiles receive their own names, so several registry modules can coexist.
+
+Tembo and Monolog are installed from the lockfile into **`modules/Registrars/Namingo/namingo/vendor`**. PNLCS's root Composer files and Tembo's namespaces are not changed. Only module files and local dependencies are deployed; repository development files are excluded.
 
 ## Configuration and WHMCS parity
 
@@ -161,25 +170,21 @@ $result = $module->register($domain, 1, [
 
 ## Upgrade
 
-Replace `modules/Registrars/EPP` with the new release contents, preserving certificates and any local operational files. For source installations, run `composer install --working-dir=modules/Registrars/EPP/namingo --no-dev --prefer-dist --optimize-autoloader` after copying the new files. Clear PNLCS caches with `php artisan optimize:clear` if the module is not discovered, and restart long-running queue workers.
-
-Review the new **gTLD Registry** switch: unlike the draft, Minimum Data Set and fee checks now require it. Select **Contact Postal Address Type** explicitly if your registry needs `loc`. Existing draft field mappings and TLS versions are retained. No database migration is required.
-
-## Development and release packaging
+Run the same installer with the **same registry name and PNLCS path**:
 
 ```bash
-composer install --working-dir=EPP/namingo --no-dev
-php tests/run.php
-php tests/tembo-xml.php
-php tests/local-dependencies.php
-scripts/build-release.sh v1.1.0
+bash <(wget -qO- https://raw.githubusercontent.com/getnamingo/pnlcs-epp-registrar/main/install-pnlcs-epp.sh) namingo /var/www/pnlcs
 ```
 
-Tests exercise module behavior with PNLCS boundary doubles and actual installed Tembo XML serializers with socket I/O replaced. They do not contact a registry. GitHub Actions runs the tests on PHP 8.4/8.5 and checks the archive's module-local autoloader. Publishing a GitHub release runs the release workflow and attaches ready-to-install ZIP/TAR archives. Update dependencies deliberately in `EPP/namingo` and commit the resulting lockfile.
+It replaces the module code and local dependencies, preserves existing `.pem`, `.key`, `.crt` and `.cer` credentials (including nested files), and leaves database settings and other registry modules intact. It stages the replacement before switching directories and restores the previous directory if the replacement fails. Run the cache/worker commands above afterwards.
+
+The installer uses a reviewed, commit-pinned module version, following the WHMCS installer. Future module releases require updating its `VERSION` and `SOURCE_COMMIT` together.
+
+An older generic `EPP` installation still uses registrar key `epp`. Installing a named profile creates a separate registrar; configure it and reassign the relevant TLDs/domains before retiring the old module. Database assignments are not silently migrated.
 
 ## Troubleshooting
 
-- **Module-local Tembo is missing:** install an attached release archive or run the module-local Composer command above. Installing Tembo globally does not satisfy this check.
+- **Module-local Tembo is missing:** rerun the installer for the affected registry, or run `composer install --no-dev` inside that module’s `namingo` directory. Installing Tembo globally does not satisfy this check.
 - **only loc type is supported:** select `loc` under Contact Postal Address Type. This covers creation and updates, including the generic DRS.UA profile.
 - **Connection or TLS failure:** check host/port, registry IP allowlisting, certificate/key paths, CA trust and chosen TLS version. `testConnection()` is available to admin tooling even where the stock PNLCS page has no EPP test button.
 - **Unsupported profile or operation:** follow the registry's schema requirements and the support tables; the settings screen alone does not certify every registry integration.
