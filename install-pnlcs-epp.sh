@@ -2,12 +2,9 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION='1.1.0'
-# Reviewed PNLCS module source. Keep the input immutable, as in the WHMCS installer.
-# Change VERSION and SOURCE_COMMIT together when updating the distributed module.
-SOURCE_COMMIT='8620b0c4ecafb16cffc468b459c2885c384dc833'
-ARCHIVE="pnlcs-epp-registrar-${VERSION}.tar.gz"
-DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/${SOURCE_COMMIT}.tar.gz"
+VERSION='0.9.0'
+ARCHIVE="v0.9.0.tar.gz"
+DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/refs/tags/v0.9.0.tar.gz"
 
 CC_REGISTRIES=(
   registrebf switch niccl cocca cocca2 eurid afnic nicge carnet nicim switchli
