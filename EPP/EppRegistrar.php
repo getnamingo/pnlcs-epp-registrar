@@ -53,6 +53,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         'PL' => 'PL / NASK (.pl)',
         'PT' => 'PT (.pt)',
         'SE' => 'SE / IIS (.se/.nu)',
+        'SI' => 'SI / ARNES (.si)',
         'SWITCH' => 'SWITCH (.ch/.li, generic Namingo backend)',
         'UA' => 'UA (.ua)',
         'VRSN' => 'Verisign / gTLD-style',
@@ -1185,6 +1186,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 case 'HR':
                     $payload['nin'] = $nin;
                     $payload['nin_type'] = $ninType;
+                    break;
+                case 'SI':
+                    $payload['nin_type'] = trim($payload['companyname']) !== '' ? 'org' : 'person';
                     break;
                 case 'PT':
                     $payload['vat'] = $vat;

@@ -2,9 +2,9 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION='0.9.0'
-ARCHIVE="v0.9.0.tar.gz"
-DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/refs/tags/v0.9.0.tar.gz"
+VERSION='0.9.1'
+ARCHIVE="v0.9.1.tar.gz"
+DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/refs/tags/v0.9.1.tar.gz"
 
 CC_REGISTRIES=(
   registrebf switch niccl cocca cocca2 eurid afnic nicge carnet nicim switchli
@@ -211,8 +211,8 @@ module_dir=${module_candidates[0]}
 
 [[ -f "$module_dir/EppRegistrar.php" ]] || die 'Unexpected archive structure: missing EppRegistrar.php.'
 [[ -f "$module_dir/pnlcs.json" ]] || die 'Unexpected archive structure: missing pnlcs.json.'
-[[ -f "$module_dir/namingo/composer.json" && -f "$module_dir/namingo/composer.lock" ]] \
-  || die 'Unexpected archive structure: missing module-local Composer manifest/lockfile.'
+[[ -f "$module_dir/namingo/composer.json" ]] \
+  || die 'Unexpected archive structure: missing module-local Composer manifest.'
 
 # Customize only the registrar's PHP. Tembo and its dependencies keep their names.
 customizer="$workdir/customize-php.pl"
