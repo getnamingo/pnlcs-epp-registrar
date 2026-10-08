@@ -262,7 +262,7 @@ REGISTRY="$registry" REGISTRY_NAME="$registry_name" perl -MJSON::PP -e '
   open my $fh, "<", $path or die "Cannot read $path: $!\n";
   local $/; my $raw = <$fh>; close $fh;
   my $data = decode_json($raw);
-  $data->{name} = $ENV{REGISTRY};
+  $data->{name} = $ENV{REGISTRY_NAME};
   $data->{class} = "Modules\\Registrars\\$ENV{REGISTRY_NAME}\\$ENV{REGISTRY_NAME}Registrar";
   $data->{display_name} = "$ENV{REGISTRY_NAME} EPP Module";
   $data->{description} = "PNLCS EPP integration for the $ENV{REGISTRY_NAME} registry.";
