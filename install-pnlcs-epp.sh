@@ -2,12 +2,12 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-VERSION='v1.0.0-RC1'
-ARCHIVE="v1.0.0-RC1.tar.gz"
-DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/refs/tags/v1.0.0-RC1.tar.gz"
+VERSION='v1.2.6'
+ARCHIVE="v1.2.6.tar.gz"
+DOWNLOAD_URL="https://github.com/getnamingo/pnlcs-epp-registrar/archive/refs/tags/v1.2.6.tar.gz"
 
 CC_REGISTRIES=(
-  registrebf switch niccl cocca cocca2 eurid afnic nicge carnet nicim switchli
+  arnes registrebf switch niccl cocca cocca2 eurid afnic nicge carnet nicim switchli
   niclv nicmx sidn iisnu nask rotld iis hostmaster ye zadna
 )
 G_REGISTRIES=(

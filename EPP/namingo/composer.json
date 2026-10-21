@@ -8,7 +8,7 @@
         "ext-xmlwriter": "*",
         "monolog/monolog": "^3.0",
         "php": "^8.3",
-        "pinga/tembo": "^1.1.23"
+        "pinga/tembo": "^1.1.24"
     },
     "config": {
         "sort-packages": true

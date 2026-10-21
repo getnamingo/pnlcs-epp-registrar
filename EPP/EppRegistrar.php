@@ -1,5 +1,22 @@
 <?php
 
+/*
+ * Namingo EPP Registrar module for PNLCS
+ *
+ * Copyright (c) 2023-2026 Taras Kondratyuk
+ * Copyright (c) 2025-2026 Namingo contributors
+ * Copyright (c) 2026 Terbora Ltd.
+ *
+ * Based on Generic EPP with DNSsec Registrar Module for WHMCS written in 2019 by Lilian Rudenco (info@xpanel.com)
+ * Work of Lilian Rudenco is under http://opensource.org/licenses/afl-3.0.php Academic Free License (AFL 3.0)
+ * https://github.com/xpanel/Generic-EPP-with-DNSsec-Registrar-Module-for-WHMCS
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file distributed with this software for the full license text.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 declare(strict_types=1);
 
 namespace Modules\Registrars\EPP;
@@ -14,15 +31,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Pinga\Tembo\EppRegistryFactory;
 
-/**
- * Generic EPP registrar for PNLCS using Namingo's Pinga\Tembo EPP client.
- *
- * The installer installs Tembo in this module's `namingo/vendor/` directory.
- * Source checkouts install dependencies there, without changing PNLCS Composer.
- *
- * Implements every operation currently exposed by PNLCS's registrar contract,
- * authoritative sync, connection testing, and several advanced EPP helpers.
- */
 final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 {
     use MapsClientFields;
@@ -52,6 +60,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         'NO' => 'NO (.no)',
         'PL' => 'PL / NASK (.pl)',
         'PT' => 'PT (.pt)',
+        'RO' => 'RO / RoTLD (.ro)',
         'SE' => 'SE / IIS (.se/.nu)',
         'SI' => 'SI / ARNES (.si)',
         'SWITCH' => 'SWITCH (.ch/.li, generic Namingo backend)',
@@ -270,6 +279,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             ['name' => 'nin_field', 'label' => 'NIN / Personal ID Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'vat_field', 'label' => 'VAT / Tax ID Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'nin_type_field', 'label' => 'NIN Type Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
+            ['name' => 'ro_person_type_field', 'label' => 'RO Registrant Type Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false, 'description' => 'RO only: client field containing p, ap, nc, c, gi, pi or o. Blank values default to c for a company, otherwise p.'],
+            ['name' => 'ro_cnp_fiscal_code_field', 'label' => 'RO CNP / Fiscal Code Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false, 'description' => 'RO only: CNP for individuals or fiscal code for legal entities. Required for Romanian holders.'],
+            ['name' => 'ro_registration_number_field', 'label' => 'RO Registration Number Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false, 'description' => 'RO only: company registration number. Required for Romanian commercial companies.'],
             ['name' => 'pt_validated_field', 'label' => 'PT Validation Flag Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'pt_validated_date_field', 'label' => 'PT Validation Date Client Field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
             ['name' => 'allow_premium', 'label' => 'Allow Premium Registrations', 'type' => 'yesno', 'default' => '0'],
@@ -408,6 +420,13 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                     'op' => 'request',
                 ];
 
+                if ($this->profile() === 'RO') {
+                    if (trim($eppCode) === '') {
+                        throw new \RuntimeException('A RoTLD registrar-transfer authorization key is required.');
+                    }
+                    unset($payload['years']);
+                }
+
                 // AFNIC transfer requests need the existing admin/tech handles.
                 if ($this->profile() === 'FR') {
                     $info = $this->domainInfo($epp, $fqdn);
@@ -419,6 +438,29 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
                 $response = $epp->domainTransfer($payload);
                 $this->throwOnError($response, 'Transfer request failed');
+
+                if ($this->profile() === 'RO') {
+                    if ((int) ($response['code'] ?? 0) !== 1000) {
+                        throw new \RuntimeException('RoTLD did not confirm immediate transfer completion.');
+                    }
+                    $info = $this->domainInfo($epp, $fqdn);
+                    $this->throwOnError($info, 'Domain info failed after transfer');
+                    $this->assertRoSponsor($info);
+                    $expiry = $this->responseDate($info, ['exDate', 'expiryDate', 'expiry_date']);
+                    if ($expiry === null) {
+                        throw new \RuntimeException('RoTLD returned no expiry date after transfer; sync before retrying.');
+                    }
+                    $domain->update([
+                        'registrar' => 'epp',
+                        'status' => $this->mapDomainStatus($this->statuses($info), $expiry),
+                        'expiry_date' => $expiry,
+                        'next_due_date' => $expiry,
+                        'nameservers' => json_encode($this->nameserversFromInfo($info)),
+                        'epp_code' => null,
+                    ]);
+
+                    return ['success' => true, 'message' => 'RoTLD registrar transfer completed without renewal.', 'expiry_date' => $expiry];
+                }
 
                 $domain->update(['registrar' => 'epp', 'status' => 'pending']);
 
@@ -547,6 +589,10 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
     public function getEPPCode(Domain $domain): string
     {
+        if ($this->profile() === 'RO') {
+            return 'The holder must generate a registrar-transfer authorization key at https://www.rotld.ro/domadmin. The domain management password is not a transfer key.';
+        }
+
         try {
             $fqdn = $this->asciiDomain($domain->domain);
 
@@ -676,6 +722,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
             return $this->withEpp(function ($epp) use ($domain): array {
                 $info = $this->domainInfo($epp, $this->asciiDomain($domain->domain));
                 $this->throwOnError($info, 'Domain info failed');
+                $this->assertRoSponsor($info);
 
                 $expiry = $this->responseDate($info, ['exDate', 'expiryDate', 'expiry_date']);
                 $statuses = $this->statuses($info);
@@ -1126,7 +1173,7 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
         $roles = match ($this->profile()) {
             'EU', 'SWITCH' => ['registrant', 'tech'],
-            'PL', 'GE' => ['registrant'],
+            'PL', 'GE', 'RO' => ['registrant'],
             default => ['registrant', 'admin', 'tech', 'billing'],
         };
 
@@ -1214,6 +1261,18 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
                 case 'GE':
                     $payload['nin'] = $nin;
                     break;
+                case 'RO':
+                    $payload['person_type'] = $params['person_type']
+                        ?? $params['additionalfields']['Registrant Type']
+                        ?? $this->resolveClientField($client, $this->nullableSetting('ro_person_type_field'), ['Registrant Type', 'person_type']);
+                    $payload['cnp_fiscal_code'] = $params['cnp_fiscal_code']
+                        ?? $params['additionalfields']['CNPFiscalCode']
+                        ?? $this->resolveClientField($client, $this->nullableSetting('ro_cnp_fiscal_code_field'), ['CNPFiscalCode', 'cnp_fiscal_code'])
+                        ?? (trim($payload['companyname']) !== '' ? $vat : $nin);
+                    $payload['registration_number'] = $params['registration_number']
+                        ?? $params['additionalfields']['Registration Number']
+                        ?? $this->resolveClientField($client, $this->nullableSetting('ro_registration_number_field'), ['Registration Number', 'registration_number']);
+                    break;
             }
 
             $payload = array_replace_recursive($payload, $this->jsonSetting('contact_create_extra_json'));
@@ -1223,6 +1282,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
             $response = $epp->contactCreate($payload);
             $this->throwOnError($response, "EPP contact:create failed for {$role}");
+            if ($this->profile() === 'RO' && trim((string) ($response['id'] ?? '')) === '') {
+                throw new \RuntimeException('RoTLD contact:create returned no assigned contact ID.');
+            }
             $created[$role] = (string) ($response['id'] ?? $id);
         }
 
@@ -1397,6 +1459,12 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
 
     private function transferOperation(Domain $domain, string $operation): array
     {
+        if ($this->profile() === 'RO') {
+            return $operation === 'query'
+                ? $this->syncDomain($domain)
+                : ['success' => false, 'message' => 'RoTLD registrar transfers complete immediately; approve, reject and cancel are unavailable.'];
+        }
+
         try {
             return $this->withEpp(function ($epp) use ($domain, $operation): array {
                 $response = $epp->domainTransfer([
@@ -1600,6 +1668,15 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     // Local/config helpers
     // ---------------------------------------------------------------------
 
+    private function assertRoSponsor(array $info): void
+    {
+        if ($this->profile() === 'RO'
+            && (trim((string) ($info['clID'] ?? '')) === ''
+                || (string) $info['clID'] !== trim((string) ($this->settings['clid'] ?? '')))) {
+            throw new \RuntimeException('The domain is not confirmed as sponsored by this RoTLD registrar.');
+        }
+    }
+
     private function loadSettings(): array
     {
         try {
@@ -1709,6 +1786,16 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
         }
 
         return array_slice(array_values(array_unique($result)), 0, 5);
+        $result = array_values(array_unique($result));
+        if ($this->profile() === 'RO') {
+            if (count($result) > 6) {
+                throw new \RuntimeException('RoTLD supports at most six nameservers.');
+            }
+
+            return $result;
+        }
+
+        return array_slice($result, 0, 5);
     }
 
     private function formatNameservers(array $nameservers): array
@@ -1810,6 +1897,9 @@ final class EppRegistrar implements RegistrarModuleInterface, SyncsDomainData
     private function randomPassword(int $length = 16): string
     {
         $sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%&*+-=?'];
+        if ($this->profile() === 'RO') {
+            $sets[3] = '!@#$*+-=?';
+        }
         $characters = [];
         foreach ($sets as $set) {
             $characters[] = $set[random_int(0, strlen($set) - 1)];
